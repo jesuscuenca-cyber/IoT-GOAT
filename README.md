@@ -1,6 +1,7 @@
 # IoTGoat Security Writeups
 
-![alt text](Images/IoT_GOAT.png)
+
+
 
 This repository contains my personal writeups and security research while working through **[OWASP IoTGoat](https://github.com/OWASP/IoTGoat)**.
 
