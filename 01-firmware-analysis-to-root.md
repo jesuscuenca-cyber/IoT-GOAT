@@ -210,4 +210,4 @@ Privilege escalation to root via backdoor (bind shell on port 5515)
 ## Conclusions
 
 IoTGoat serves as an excellent exercise for practicing the end-to-end lifecycle of an IoT penetration test: firmware extraction and analysis, credential cracking using specialized (rather than generic) wordlists, setting up a dynamic testing environment, and post-exploitation enumeration on an embedded Linux system with limited tools (BusyBox). The most interesting finding was not the most "technical" one (the backdoor is discovered through basic process enumeration); this reinforces the fact that a significant part of a penetration test's value lies in methodical enumeration, not merely in exploiting complex vulnerabilities.
----
+
