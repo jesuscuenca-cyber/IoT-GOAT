@@ -38,16 +38,16 @@ binwalk -e IoTGoat-raspberry-pi2.img
 
 This generates `_IoTGoat-raspberry-pi2.img.extracted/squashfs-root/`, containing the device's complete file system, ready for offline analysis.
 
-## 2. Craqueo de credenciales (I1 — Weak/Hardcoded Passwords)
+## 2. Credential cracking (I1 — Weak/Hardcoded Passwords)
 
-Dentro de `etc/shadow` encontré dos hashes en formato MD5 crypt (`$1$`), un esquema de hashing débil y anticuado:
+Inside `etc/shadow`, I found two hashes in MD5 crypt format (`$1$`), a weak and outdated hashing scheme.:
 
-```
+```bash
 root:$1$Jl7H1VOG$Wgw2F/C.nLNTC.4pwDa4H1:...
 iotgoatuser:$1$79bz0K8z$Ii6Q/if83F1QodGmkb4Ah.:...
 ```
 
-Diccionarios genéricos como `rockyou.txt` o listas de credenciales por defecto de fabricante no dieron resultado — tiene sentido, porque estas credenciales no son contraseñas "humanas" ni de panel web de router, sino del tipo que usa el malware **Mirai** para sus escaneos IoT. La lista completa real de credenciales Mirai está ofuscada con XOR dentro del código fuente filtrado del malware (`scanner.c`), así que escribí un pequeño script en Python para decodificarla y generar un diccionario dirigido:
+Generic dictionaries like `rockyou.txt` or lists of default manufacturer credentials yielded no results—which makes sense, as these are not "human" passwords or router web-interface credentials, but rather the type used by the **Mirai** malware for its IoT scans. The actual, complete list of Mirai credentials is XOR-obfuscated within the malware's leaked source code (`scanner.c`), so I wrote a small Python script to decode it and generate a targeted dictionary:
 
 ```python
 import re
@@ -67,75 +67,75 @@ with open('mirai_creds_decoded.txt', 'w') as out:
         out.write(f"{decode(user_hex)}:{decode(pass_hex)}\n")
 ```
 
-Con las 60 credenciales decodificadas, extraje solo la columna de contraseñas y lancé John:
+With the 60 credentials decoded, I extracted only the password column and ran John:
 
 ```bash
 cut -d':' -f2 mirai_creds_decoded.txt | sort -u > mirai_passwords.txt
 john --wordlist=mirai_passwords.txt hash.txt
 ```
 
-Resultado:
+Result:
 
 ```
 7ujMko0vizxv     (iotgoatuser)
 ```
 
-## 3. Puesta en marcha del entorno dinámico
+## 3. Startup of the dynamic environment
 
-El `.img` de Raspberry Pi es una imagen ARM y no puede ejecutarse en VirtualBox (que emula x86). Para el análisis dinámico (red, servicios, runtime) usé el artefacto que el propio proyecto ofrece para este propósito: **`IoTGoat-x86.vmdk`**.
+The Raspberry Pi `.img` file is an ARM image and cannot run in VirtualBox (which emulates x86). For dynamic analysis (network, services, runtime), I used the artifact provided by the project itself for this purpose: **`IoTGoat-x86.vmdk`**.
 
-Configuración de la VM en VirtualBox:
-- Tipo: Linux, versión Linux 2.6/3.x/4.x (32-bit)
-- **PAE/NX habilitado** (necesario para que arranque)
-- Adaptador de red en modo **Host-only**, compartido con la máquina de Kali, para permitir el ataque entre ambas VMs (NAT las aísla entre sí)
+VM configuration in VirtualBox:
+- Type: Linux, version Linux 2.6/3.x/4.x (32-bit)
+- **PAE/NX enabled** (required for booting)
+- Network adapter in **Host-only** mode, shared with the Kali machine, to enable the attack between both VMs (NAT isolates them from each other)
 
-Con ambas VMs en la misma red (`192.168.56.0/24`), confirmé conectividad y pasé al reconocimiento.
+With both VMs on the same network (`192.168.56.0/24`), I confirmed connectivity and proceeded to the reconnaissance phase.
 
-## 4. Reconocimiento de red
+## 4. Network recognition
 
 ```bash
 sudo nmap -p- --open -sS -sC -sV --min-rate 5000 -n -Pn -A 192.168.56.102
 ```
 
-| Puerto | Servicio |
+| Port | Service |
 |---|---|
 | 22/tcp | Dropbear SSH |
 | 53/tcp | dnsmasq 2.73 |
 | 80/tcp | LuCI (redirige a HTTPS) |
 | 443/tcp | LuCI sobre TLS (cert autofirmado) |
 
-SO detectado: OpenWrt 19.07 (Linux 4.14).
+SO detected: OpenWrt 19.07 (Linux 4.14).
 
-## 5. Acceso inicial vía SSH
+## 5. Initial access via SSH
 
 ```bash
 ssh -o HostKeyAlgorithms=+ssh-rsa iotgoatuser@192.168.56.102
 ```
 
-(El flag `HostKeyAlgorithms` es necesario porque Dropbear en firmware antiguo solo ofrece `ssh-rsa`, deshabilitado por defecto en clientes OpenSSH modernos.)
+(The `HostKeyAlgorithms` flag is necessary because Dropbear in older firmware only offers `ssh-rsa`, which is disabled by default in modern OpenSSH clients.)
 
-Login exitoso con la credencial craqueada en el paso 2. Acceso shell como `iotgoatuser`.
+Successful login using the credential cracked in step 2. Shell access as `iotgoatuser`.
 
-## 6. Enumeración post-explotación y descubrimiento del backdoor (I1)
+## 6. Post-exploitation enumeration and backdoor discovery (I1)
 
-El sistema corre BusyBox, con sintaxis reducida respecto a GNU coreutils (`ps w` en vez de `ps aux`, sin `sudo`, sin binarios SUID). La enumeración estándar (SUID, capabilities, cron, sudoers) no dio resultados.
+The system runs BusyBox, with a reduced syntax compared to GNU coreutils (`ps w` instead of `ps aux`, no `sudo`, no SUID binaries). Standard enumeration (SUID, capabilities, cron, sudoers) yielded no results.
 
-Revisando los procesos activos:
+Checking active processes:
 
 ```bash
 ps w
 ```
 
-Dos procesos llamaron la atención, ambos corriendo como root:
+Two processes drew attention, both running as root:
 
 ```
 1671 root  668  S  /usr/bin/shellback
 1685 root  1000 S  telnetd -p 65534
 ```
 
-Ninguno de los dos apareció en el escaneo nmap inicial (falso negativo por el `--min-rate` agresivo, confirmado más tarde con un escaneo dirigido). `netstat -tlnp` sí los mostró escuchando en `0.0.0.0`.
+Neither of the two appeared in the initial nmap scan (a false negative caused by the aggressive `--min-rate`, confirmed later with a targeted scan). `netstat -tlnp` did show them listening on `0.0.0.0`.
 
-Conectando directamente al puerto de `shellback`:
+Connecting directly to the `shellback` port:
 
 ```bash
 nc 127.0.0.1 5515
@@ -145,34 +145,34 @@ nc 127.0.0.1 5515
 [***]Successfully Connected to IoTGoat's Backdoor[***]
 ```
 
-El propio mensaje confirma la existencia de un backdoor intencionado. Dentro de esa sesión:
+The message itself confirms the existence of an intentional backdoor. Within that session:
 
 ```
 id
 uid=0(root) gid=0(root)
 ```
 
-**Acceso root confirmado**, sin necesidad de craquear el segundo hash.
+**Root access confirmed**, without the need to crack the second hash.
 
-Análisis del binario con `strings`:
+Binary analysis with `strings`:
 
 ```bash
 strings /usr/bin/shellback
 ```
 
-Las funciones importadas (`socket`, `bind`, `listen`, `accept`, `fork`, `dup2`, `execve`) describen un **bind shell clásico en C**: escucha en el puerto 5515, y al conectar redirige stdin/stdout/stderr hacia `/bin/busybox`, entregando una shell de root sin ningún tipo de autenticación adicional.
+The imported functions (`socket`, `bind`, `listen`, `accept`, `fork`, `dup2`, `execve`) describe a **classic C bind shell**: it listens on port 5515, and upon connection, redirects stdin/stdout/stderr to `/bin/busybox`, providing a root shell without any additional authentication.
 
-Revisé también la configuración de firewall (`/etc/config/firewall`, `/etc/firewall.user`) para descartar que el acceso al backdoor estuviera restringido por red — no lo estaba: la zona LAN acepta todo el tráfico entrante sin filtrar.
+I also checked the firewall configuration (`/etc/config/firewall`, `/etc/firewall.user`) to rule out network-level restrictions on accessing the backdoor—there were none: the LAN zone accepts all incoming traffic unfiltered.
 
-## 7. Componente desactualizado — dnsmasq 2.73 (I5)
+## 7. Coutdated component — dnsmasq 2.73 (I5)
 
-Confirmé la versión de dnsmasq tanto en el análisis estático (opkg control file) como en el dinámico (banner `dns-nsid` de nmap):
+I verified the dnsmasq version via both static analysis (opkg control file) and dynamic analysis (nmap `dns-nsid` banner):
 
 ```
 Version: 2.73-1
 ```
 
-Esta versión es vulnerable a varios CVEs críticos publicados en 2017:
+This version is vulnerable to several critical CVEs published in 2017.:
 
 | CVE | Tipo | CVSS |
 |---|---|---|
@@ -181,36 +181,33 @@ Esta versión es vulnerable a varios CVEs críticos publicados en 2017:
 | CVE-2017-14493 | Stack buffer overflow (DHCPv6) | 9.8 |
 | CVE-2017-13704 | Crash por paquete UDP oversized | Medio |
 
-Todos ellos permiten denegación de servicio remota sin autenticación, y potencialmente ejecución de código arbitrario, contra un servicio que en este dispositivo corre bajo el usuario `nobody`. No llegué a desarrollar un exploit funcional contra estos CVEs en esta sesión de práctica — el hallazgo queda documentado por versión + CVE público, que es evidencia suficiente para reportarlo con severidad crítica en un informe real.
+All of them allow for unauthenticated remote denial of service—and potentially arbitrary code execution—against a service running on the device under the `nobody` user. I did not develop a functional exploit for these CVEs during this practice session; the finding is documented by version and public CVE, which constitutes sufficient evidence to report it as critical severity in a real-world report.
 
-## Resumen de la cadena de ataque
+## Attack chain summary
 
+```bash
+Firmware extraction (binwalk)
+│
+▼
+Credential cracking — I1 (John + decoded Mirai dictionary)
+│
+▼
+Setting up the dynamic environment (VirtualBox, host-only network)
+│
+▼
+Network reconnaissance (nmap) → outdated dnsmasq 2.73 — I5
+│
+▼
+Initial SSH access using cracked credentials
+│
+▼
+Post-exploitation enumeration → backdoor discovery — I1
+│
+▼
+Privilege escalation to root via backdoor (bind shell on port 5515)
 ```
-Extracción de firmware (binwalk)
-        │
-        ▼
-Craqueo de credenciales — I1 (John + diccionario Mirai decodificado)
-        │
-        ▼
-Montaje del entorno dinámico (VirtualBox, red host-only)
-        │
-        ▼
-Reconocimiento de red (nmap) → dnsmasq 2.73 desactualizado — I5
-        │
-        ▼
-Acceso inicial por SSH con credencial craqueada
-        │
-        ▼
-Enumeración post-explotación → descubrimiento de backdoor — I1
-        │
-        ▼
-Escalada a root vía backdoor (bind shell en puerto 5515)
-```
 
-## Conclusiones
+## Conclusions
 
-IoTGoat es un buen ejercicio para practicar de punta a punta el ciclo de un pentest IoT: extracción y análisis de firmware, craqueo de credenciales con diccionarios especializados (no genéricos), configuración de un entorno de pruebas dinámico, y enumeración post-explotación en un sistema Linux embebido con herramientas limitadas (BusyBox). El hallazgo más interesante no fue el más "técnico" (el backdoor se descubre con enumeración básica de procesos), lo que refuerza que buena parte del valor de un pentest está en una enumeración metódica, no solo en explotar vulnerabilidades complejas.
-
+IoTGoat serves as an excellent exercise for practicing the end-to-end lifecycle of an IoT penetration test: firmware extraction and analysis, credential cracking using specialized (rather than generic) wordlists, setting up a dynamic testing environment, and post-exploitation enumeration on an embedded Linux system with limited tools (BusyBox). The most interesting finding was not the most "technical" one (the backdoor is discovered through basic process enumeration); this reinforces the fact that a significant part of a penetration test's value lies in methodical enumeration, not merely in exploiting complex vulnerabilities.
 ---
-
-*Practicado como preparación para la certificación VHL IoT Pentest.*
