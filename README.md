@@ -1,6 +1,10 @@
+
+<p align="center">
+  <img src="./Images/vertical-blue-logo.png" alt="OWASP IoTGoat Logo" width="300"/>
+</p>
+
 # IoTGoat Security Writeups
-
-
+...
 
 
 This repository contains my personal writeups and security research while working through **[OWASP IoTGoat](https://github.com/OWASP/IoTGoat)**.
